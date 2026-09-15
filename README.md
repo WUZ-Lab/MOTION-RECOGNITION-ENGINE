@@ -1,0 +1,2 @@
+# MOTION-RECOGNITION-ENGINE
+동작 판별 sdk
