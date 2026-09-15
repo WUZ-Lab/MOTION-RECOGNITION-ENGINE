@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion Engine · 좌표 라벨링</title>
+<style>
+  * { box-sizing: border-box } body { margin: 0; background: #eef2f5; color: #172b3a; font: 15px system-ui, sans-serif }
+  main { max-width: 1120px; margin: 32px auto; padding: 0 20px } h1 { margin-bottom: 8px } p { line-height: 1.6 }
+  .grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px } section { background: white; border-radius: 16px; padding: 24px; margin-bottom: 16px }
+  canvas { width: 100%; height: 440px; background: #102936; border-radius: 12px } input[type=range] { width: 100% }
+  button, select { font: inherit; padding: 10px 12px; border: 1px solid #bac9d2; border-radius: 8px; background: white; cursor: pointer; margin: 4px }
+  button.primary { background: #076f65; color: white; border-color: #076f65 } button:disabled { opacity: .45; cursor: default }
+  label { display: block; margin: 12px 0 } input[type=file] { max-width: 100% } .muted { color: #516774 }
+  #message { min-height: 24px; color: #994322 } #pending { font-family: monospace; white-space: pre-wrap }
+  ol { padding-left: 24px } li { padding: 8px 0; border-bottom: 1px solid #eee } .small { font-size: 13px }
+  @media(max-width: 760px) { .grid { grid-template-columns: 1fr } canvas { height: 340px } }
+</style>
+<main>
+  <h1>운동 좌표 라벨링</h1>
+  <p class="muted">좌표를 재생하며 1회 동작과 단계 경계를 기록합니다. 파일은 이 브라우저 안에서만 처리됩니다.</p>
+  <section>
+    <label>수집한 JSONL <input id="source" type="file" accept=".jsonl,.ndjson"></label>
+    <label>기존 라벨 불러오기 <input id="annotation" type="file" accept=".json"></label>
+    <div id="session" class="small muted">파일을 선택하세요.</div>
+  </section>
+  <div class="grid">
+    <section>
+      <canvas id="canvas" width="640" height="640" aria-label="현재 프레임 신체 좌표"></canvas>
+      <input id="timeline" type="range" min="0" max="0" value="0" aria-label="프레임 선택" disabled>
+      <div><button id="back">이전 프레임</button><button id="play">재생</button><button id="next">다음 프레임</button></div>
+      <p id="time" class="muted">—</p>
+    </section>
+    <section>
+      <h2>반복과 단계</h2>
+      <label>운동 <select id="exercise"><option>squat</option><option>burpee</option><option>jump_squat</option><option>push_up</option><option>other</option></select></label>
+      <label><input id="valid" type="checkbox" checked> 정상 완료한 반복</label>
+      <p class="small muted">중단·잘못 수행한 구간은 체크를 해제하세요. 표시하지 않은 구간은 other로 학습됩니다. 정상 반복은 모든 단계 경계를 기록해야 합니다.</p>
+      <button id="mark" class="primary" disabled>start 기록</button><button id="undo">마지막 경계 취소</button><button id="cancel">구간 취소</button>
+      <div id="pending"></div>
+      <p id="message" role="status"></p>
+      <h3>기록한 구간</h3><ol id="reps"></ol>
+      <button id="download" class="primary" disabled>검토 완료 · 라벨 다운로드</button>
+      <p class="small muted">원본 JSONL과 같은 이름의 .annotations.json으로 저장하세요. 재생을 멈추고 방향키로 한 프레임씩 이동할 수 있습니다.</p>
+    </section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const phases = {squat:['start','bottom','end'], push_up:['start','bottom','end'],
+  jump_squat:['start','bottom','takeoff','landing','end'], burpee:['start','lowered','plank','tucked','takeoff','landing','end'], other:['start','end']};
+const links = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+let header=null, frames=[], repetitions=[], pending={}, filename='', timer=null;
+const sequence = () => $('valid').checked ? phases[$('exercise').value] : ['start','end'];
+const current = () => frames[Number($('timeline').value)];
+const message = text => $('message').textContent=text;
+function stop() { clearTimeout(timer); timer=null; $('play').textContent='재생'; }
+function draw() {
+  const ctx=$('canvas').getContext('2d'); ctx.clearRect(0,0,640,640);
+  const frame=current(); if(!frame) return;
+  $('time').textContent=`${Number($('timeline').value)+1} / ${frames.length} · ${frame.timestampMs} ms · 세션 시작부터 ${((frame.timestampMs-frames[0].timestampMs)/1000).toFixed(2)}초`;
+  const p=frame.pose;
+  if(!p) { ctx.fillStyle='white';ctx.font='22px system-ui';ctx.fillText('좌표 없음',260,320); return; }
+  const scale=Math.min(640/p.imageWidth,640/p.imageHeight), dx=(640-p.imageWidth*scale)/2, dy=(640-p.imageHeight*scale)/2;
+  const point=l=>[dx+l.x*p.imageWidth*scale,dy+l.y*p.imageHeight*scale];
+  ctx.strokeStyle='#37d4b2';ctx.lineWidth=5;
+  for(const [a,b] of links) {
+    const l=p.landmarks[a], r=p.landmarks[b]; if(Math.min(l.visibility??1,r.visibility??1)<.5) continue;
+    ctx.beginPath();ctx.moveTo(...point(l));ctx.lineTo(...point(r));ctx.stroke();
+  }
+  ctx.fillStyle='#ffffff';
+  for(const l of p.landmarks) if((l.visibility??1)>=.5){ctx.beginPath();ctx.arc(...point(l),4,0,2*Math.PI);ctx.fill();}
+}
+function render() {
+  const next=sequence()[Object.keys(pending).length];
+  $('mark').textContent=`${next || 'end'} 기록`; $('mark').disabled=!header;
+  $('pending').textContent=Object.entries(pending).map(([p,t])=>`${p}: ${t} ms`).join('\n');
+  $('exercise').disabled=Object.keys(pending).length>0; $('valid').disabled=Object.keys(pending).length>0;
+  $('reps').replaceChildren();
+  repetitions.forEach((rep,i)=>{
+    const li=document.createElement('li'); li.append(`${rep.exerciseId} · ${rep.startMs}–${rep.endMs} ms${rep.valid?'':' · 중단/오류'} `);
+    const jump=document.createElement('button');jump.textContent='이동';jump.onclick=()=>{stop();$('timeline').value=Math.max(0,frames.findIndex(f=>f.timestampMs>=rep.startMs));draw();};
+    const remove=document.createElement('button');remove.textContent='삭제';remove.onclick=()=>{repetitions.splice(i,1);render();};li.append(jump,remove);$('reps').append(li);
+  });
+  $('download').disabled=!header || Object.keys(pending).length>0;
+}
+function validateReps(reps) {
+  let last=-1;
+  for(const r of reps){
+    if(!phases[r.exerciseId] || typeof r.valid!=='boolean' || !Number.isInteger(r.startMs) || !Number.isInteger(r.endMs) ||
+       r.startMs<=last || r.startMs>=r.endMs || r.startMs<frames[0].timestampMs || r.endMs>frames.at(-1).timestampMs) throw Error('구간 순서·범위·운동 라벨을 확인하세요.');
+    if(r.valid && r.exerciseId!=='other') {
+      const names=phases[r.exerciseId], times=names.map(n=>r.phases?.[n]);
+      if(Object.keys(r.phases||{}).length!==names.length || times.some(t=>!Number.isInteger(t)) || times[0]!==r.startMs || times.at(-1)!==r.endMs || times.some((t,i)=>i>0&&t<=times[i-1])) throw Error('필수 단계 경계가 없거나 순서가 잘못되었습니다.');
+    }
+    last=r.endMs;
+  }
+}
+$('source').onchange=async event=>{
+  stop(); try {
+    const file=event.target.files[0]; if(!file)return;
+    const rows=(await file.text()).trim().split(/\r?\n/).map(JSON.parse), h=rows.shift();
+    if(h.type!=='session'||h.schemaVersion!==1||!h.sessionId||!h.participantId||!rows.length)throw Error('올바른 v1 세션 파일이 아닙니다.');
+    let last=-1;
+    for(const f of rows){
+      if(f.type!=='frame'||!Number.isInteger(f.timestampMs)||f.timestampMs<=last)throw Error('프레임 시간이 올바르지 않습니다.');
+      if(f.pose && (f.pose.timestampMs!==f.timestampMs || f.pose.landmarks?.length!==33 || f.pose.worldLandmarks?.length!==33 || !(f.pose.imageWidth>0 && f.pose.imageHeight>0)))throw Error('좌표 형식을 확인하세요.');
+      last=f.timestampMs;
+    }
+    header=h;frames=rows;filename=file.name;repetitions=[];pending={};
+    $('timeline').max=frames.length-1;$('timeline').value=0;$('timeline').disabled=false;
+    $('exercise').value=phases[h.exerciseLabel]?h.exerciseLabel:'other';
+    $('session').textContent=`세션 ${h.sessionId} · 참가자 ${h.participantId} · ${frames.length} 프레임`;
+    message('원본 좌표를 확인하고 반복 시작 위치로 이동하세요.');render();draw();
+  } catch(error){message(error.message);}
+};
+$('annotation').onchange=async event=>{
+  try{if(!header)throw Error('JSONL을 먼저 여세요.');const file=event.target.files[0];if(!file)return;
+    const data=JSON.parse(await file.text());if(data.schemaVersion!==1||data.sessionId!==header.sessionId)throw Error('세션 ID가 다릅니다.');
+    validateReps(data.repetitions);repetitions=data.repetitions;pending={};render();message('기존 라벨을 불러왔습니다.');
+  }catch(error){message(error.message);}
+};
+$('timeline').oninput=()=>{stop();draw();};
+function move(by){stop();$('timeline').value=Math.max(0,Math.min(frames.length-1,Number($('timeline').value)+by));draw();}
+$('back').onclick=()=>move(-1);$('next').onclick=()=>move(1);
+$('play').onclick=()=>{
+  if(timer){stop();return;}if(!frames.length)return;$('play').textContent='일시정지';
+  const tick=()=>{const i=Number($('timeline').value);if(i>=frames.length-1){stop();return;}
+    timer=setTimeout(()=>{$('timeline').value=i+1;draw();tick();},Math.min(500,frames[i+1].timestampMs-frames[i].timestampMs));};tick();
+};
+$('mark').onclick=()=>{
+  stop();try{
+    const t=current().timestampMs, name=sequence()[Object.keys(pending).length], prior=Object.values(pending).at(-1);
+    if(prior!==undefined&&t<=prior)throw Error('다음 단계는 이전 경계보다 뒤에 있어야 합니다.');
+    const next={...pending,[name]:t};
+    if(name==='end'){
+      const rep={startMs:next.start,endMs:next.end,exerciseId:$('exercise').value,valid:$('valid').checked,phases:next};
+      const all=[...repetitions,rep].sort((a,b)=>a.startMs-b.startMs);validateReps(all);repetitions=all;pending={};message('반복 구간을 기록했습니다.');
+    }else{pending=next;message('다음 단계의 첫 프레임으로 이동하세요.');}render();
+  }catch(error){message(error.message);}
+};
+$('undo').onclick=()=>{delete pending[Object.keys(pending).at(-1)];render();};
+$('cancel').onclick=()=>{pending={};render();};$('exercise').onchange=render;$('valid').onchange=render;
+$('download').onclick=()=>{
+  try{validateReps(repetitions);const blob=new Blob([JSON.stringify({schemaVersion:1,sessionId:header.sessionId,repetitions},null,2)+'\n'],{type:'application/json'});
+    const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename.replace(/\.(jsonl|ndjson)$/i,'')+'.annotations.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(error){message(error.message);}
+};
+document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName))return;
+  if(e.key==='ArrowLeft'){e.preventDefault();move(-1);}if(e.key==='ArrowRight'){e.preventDefault();move(1);}});
+</script>
+</html>

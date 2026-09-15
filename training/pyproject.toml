@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "motion-engine-training"
+version = "0.1.0"
+description = "Coordinate collection validation, causal TCN training and LiteRT export"
+requires-python = ">=3.11,<3.14"
+dependencies = ["numpy>=1.26,<3", "tensorflow==2.20.0"]
+
+[project.scripts]
+motion-train = "motion_training.train:main"
+motion-evaluate = "motion_training.evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["motion_training*"]

@@ -1,0 +1,41 @@
+name: Verify
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - run: ./gradlew :core:jvmTest :sample-android:assembleDebug :sample-android:lintDebug --console=plain
+      - run: PYTHONPATH=training python3 -m unittest discover -s training/tests -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-reports
+          path: |
+            core/build/reports/tests/
+            sample-android/build/reports/
+            sample-android/build/outputs/apk/debug/
+  model-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ./training
+      - run: PYTHONPATH=training python training/tools/generate_fixtures.py --smoke-data data/synthetic
+      - run: python -m motion_training.train --data data/synthetic --output artifacts/smoke-model --epochs 2 --synthetic
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-model-smoke-only
+          path: artifacts/smoke-model/
