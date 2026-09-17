@@ -11,9 +11,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
       - uses: gradle/actions/setup-gradle@v4
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - run: ./gradlew :core:jvmTest :sample-android:assembleDebug :sample-android:lintDebug --console=plain
       - run: PYTHONPATH=training python3 -m unittest discover -s training/tests -v
       - uses: actions/upload-artifact@v4
