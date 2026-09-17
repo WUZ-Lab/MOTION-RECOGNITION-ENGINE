@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from motion_training.features import FeatureExtractor, TemporalWindow, feature_stream
-from motion_training.data import split_participants, read_session, read_annotations
+from motion_training.data import split_participants, read_session, read_annotations, label_at, validate_classes
 from motion_training.evaluate import evaluate
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "pose-features-v1.json"
@@ -74,6 +74,78 @@ class DataTests(unittest.TestCase):
         self.assertEqual(report["missedReps"], 1)
         self.assertEqual(report["progressCoverage"], 0)
         self.assertIsNone(report["progressMae"])
+        self.assertEqual(report["missingPhaseBoundaries"], 3)
+        self.assertEqual(report["phaseBoundaryCoverage"], 0)
+
+    def test_incomplete_exercise_keeps_activity_identity_but_is_not_a_completed_rep(self):
+        annotations = {"repetitions": [{"startMs": 0, "endMs": 1000, "exerciseId": "squat", "valid": False}]}
+        self.assertEqual(label_at(500, annotations), "squat")
+        self.assertEqual(label_at(1001, annotations), "other")
+        self.assertEqual(evaluate(annotations, [])["expectedReps"], 0)
+
+    def test_selected_output_class_order_is_preserved(self):
+        self.assertEqual(validate_classes(["other", "squat"]), ["other", "squat"])
+        for invalid in (["squat"], ["squat", "push_up"], ["squat", "squat", "other"], ["unknown", "other"]):
+            with self.assertRaises(ValueError):
+                validate_classes(invalid)
+
+
+class EventEvaluationTests(unittest.TestCase):
+    def rep(self, start=0, end=1000):
+        return {"startMs": start, "endMs": end, "exerciseId": "squat",
+                "phases": {"start": start, "bottom": (start+end)//2, "end": end}}
+
+    def event(self, rep_id=1, start=0, end=1000, emitted=1500):
+        return {"repId": rep_id, "exerciseId": "squat", "startedAtMs": start, "endedAtMs": end, "emittedAtMs": emitted}
+
+    def test_event_delay_does_not_pollute_live_labels_or_phase_end_error(self):
+        predictions = [{"timestampMs": t, "status": "TRACKING", "exerciseId": "squat", "events": [],
+                        "current": {"status": "TRACKING", "exerciseId": "squat", "phase": phase}}
+                       for t, phase in [(0, "lowering"), (500, "bottom"), (1000, "complete")]]
+        predictions.append({"timestampMs": 1500, "repCompleted": True, "exerciseId": "squat", "status": "TRACKING",
+                            "current": {"status": "OTHER", "exerciseId": None}, "events": [self.event()]})
+        report = evaluate({"repetitions": [self.rep()]}, predictions)
+        self.assertEqual(report["matchedReps"], 1)
+        self.assertEqual(report["frameLabelAccuracy"], 1)
+        self.assertEqual(report["phaseBoundaryMaeMs"], 0)
+        self.assertEqual(report["confirmationDelayP95Ms"], 500)
+        self.assertEqual(report["phaseBoundaryCoverage"], 1)
+
+    def test_multiple_events_in_one_frame_are_counted_and_duplicates_rejected(self):
+        annotations = {"repetitions": [self.rep(), self.rep(1100, 2100)]}
+        events = [self.event(emitted=2500), self.event(2, 1100, 2100, 2500)]
+        predictions = [{"timestampMs": 2500, "current": {"status": "OTHER"}, "events": events}]
+        report = evaluate(annotations, predictions)
+        self.assertEqual(report["matchedReps"], 2)
+        self.assertEqual(report["missingPhaseBoundaries"], 2)
+        with self.assertRaises(ValueError):
+            evaluate(annotations, predictions + predictions)
+
+    def test_wrong_cycle_start_does_not_match_by_emission_time_alone(self):
+        p = {"timestampMs": 1500, "current": {"status": "OTHER"}, "events": [self.event(start=600)]}
+        report = evaluate({"repetitions": [self.rep()]}, [p])
+        self.assertEqual(report["missedReps"], 1)
+        self.assertEqual(report["falseCompletions"], 1)
+
+    def test_phase_error_uses_transition_not_nearest_frame_of_a_hold(self):
+        predictions = [{"timestampMs": t, "exerciseId": "squat", "phase": "bottom", "status": "TRACKING"}
+                       for t in (400, 500, 600)]
+        report = evaluate({"repetitions": [self.rep()]}, predictions)
+        self.assertEqual(report["phaseBoundaryMaeMs"], 100)
+        self.assertEqual(report["missingPhaseBoundaries"], 2)
+
+    def test_legacy_completion_predictions_remain_supported(self):
+        report = evaluate({"repetitions": [self.rep()]}, [{"timestampMs": 1500, "exerciseId": "squat",
+                          "repCompleted": True, "status": "TRACKING", "phase": "complete"}])
+        self.assertEqual(report["matchedReps"], 1)
+        self.assertIsNone(report["confirmationDelayP50Ms"])
+
+    def test_guided_selection_is_not_scored_as_automatic_classification(self):
+        report = evaluate({"repetitions": []}, [{"timestampMs": 0, "current": {
+            "exerciseId": "squat", "source": "GUIDED", "status": "TRACKING"}, "events": []}])
+        self.assertIsNone(report["frameLabelAccuracy"])
+        self.assertIsNone(report["recognizedRepCoverage"])
+        self.assertEqual(report["classificationFrameCoverage"], 0)
 
 
 if __name__ == "__main__":

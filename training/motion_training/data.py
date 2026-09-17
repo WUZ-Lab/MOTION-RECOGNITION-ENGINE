@@ -64,8 +64,8 @@ def read_annotations(path, header, records):
 def label_at(timestamp, annotations):
     for rep in annotations["repetitions"]:
         if rep["startMs"] <= timestamp <= rep["endMs"]:
-            # Incorrect/incomplete exercise is not taught as a correct repetition.
-            return rep["exerciseId"] if rep.get("valid", True) else "other"
+            # Activity identity and repetition validity are separate targets.
+            return rep["exerciseId"]
     return "other"
 
 
@@ -78,8 +78,16 @@ def split_participants(ids, seed=42):
     return {p: "test" if i < n_test else "validation" if i < n_test + n_val else "train" for i, p in enumerate(ordered)}
 
 
-def load_dataset(directory, seed=42):
+def validate_classes(classes):
+    classes = list(classes)
+    if len(classes) < 2 or len(set(classes)) != len(classes) or "other" not in classes or not set(classes) <= set(CLASSES):
+        raise ValueError("Select distinct supported classes including other and at least one exercise")
+    return classes
+
+
+def load_dataset(directory, seed=42, classes=CLASSES):
     import numpy as np
+    classes = validate_classes(classes)
     sessions = []
     for path in sorted(Path(directory).glob("*.jsonl")):
         header, records = read_session(path)
@@ -99,7 +107,8 @@ def load_dataset(directory, seed=42):
             if values is None or timestamp - last_sample < 200 or sum(row[-1] for row in window) < 15:
                 continue
             partition["x"].append(window)
-            partition["y"].append(CLASSES.index(label_at(timestamp, annotations)))
+            label = label_at(timestamp, annotations)
+            partition["y"].append(classes.index(label if label in classes else "other"))
             partition["refs"].append({"session": path.name, "timestampMs": timestamp})
             last_sample = timestamp
     for name, partition in dataset.items():
@@ -107,9 +116,9 @@ def load_dataset(directory, seed=42):
             raise ValueError(f"Empty {name} partition")
         partition["x"] = np.asarray(partition["x"], dtype=np.float32)
         partition["y"] = np.asarray(partition["y"], dtype=np.int32)
-        missing = set(range(len(CLASSES))) - set(partition["y"].tolist())
+        missing = set(range(len(classes))) - set(partition["y"].tolist())
         if missing:
-            raise ValueError(f"{name} lacks classes {[CLASSES[i] for i in sorted(missing)]}; collect each exercise and other for each participant")
+            raise ValueError(f"{name} lacks classes {[classes[i] for i in sorted(missing)]}; collect each selected exercise and other for each participant")
     valid = dataset["train"]["x"][:, :, -1] == 1
     values = dataset["train"]["x"][:, :, :-1][valid]
     mean, std = values.mean(axis=0), np.maximum(values.std(axis=0), 1e-3)

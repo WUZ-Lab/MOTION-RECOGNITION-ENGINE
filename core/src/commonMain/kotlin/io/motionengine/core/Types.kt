@@ -28,6 +28,64 @@ data class PoseFrame(
 
 enum class RecognitionStatus { WARMING_UP, UNCERTAIN, TRACKING, OTHER, POOR_POSE }
 
+sealed interface RecognitionMode {
+    data object Auto : RecognitionMode
+    /** Tracks the selected exercise geometrically; does not claim automatic exercise recognition. */
+    data class Guided(val exerciseId: String) : RecognitionMode
+}
+
+enum class RecognitionSource { MODEL, GUIDED }
+enum class PoseIssue { NO_POSE, LOW_VISIBILITY, DEGENERATE_GEOMETRY }
+
+@Serializable
+data class PoseQuality(
+    val usableForTracking: Boolean = false,
+    val usableForClassification: Boolean = false,
+    val missingJoints: List<Int> = emptyList(),
+    val issue: PoseIssue? = null,
+)
+
+/** The current frame, independent of delayed completion events. */
+@Serializable
+data class TrackingState(
+    val exerciseId: String? = null,
+    val confidence: Float = 0f,
+    val progress: Float? = null,
+    val phase: String? = null,
+    val status: RecognitionStatus,
+    val source: RecognitionSource = RecognitionSource.MODEL,
+)
+
+/** IDs increase within a session. reset() starts a new session and resets IDs and counts. */
+@Serializable
+data class RepEvent(
+    val repId: Long,
+    val exerciseId: String,
+    val startedAtMs: Long,
+    val endedAtMs: Long,
+    val emittedAtMs: Long,
+    val confidence: Float? = null,
+    val source: RecognitionSource = RecognitionSource.MODEL,
+)
+
+data class TrackingConfig(
+    val progress: ProgressConfig = ProgressConfig(),
+    val exerciseProgress: Map<String, ProgressConfig> = emptyMap(),
+    val maximumPoseGapMs: Long = 500,
+    val maximumObservationGapMs: Long = 200,
+    val completionTimeoutMs: Long = 3000,
+) {
+    fun forExercise(id: String): ProgressConfig = exerciseProgress[id] ?: progress
+    fun validate() {
+        progress.validate()
+        require(exerciseProgress.keys.all { it.isNotBlank() && it != Exercises.OTHER })
+        exerciseProgress.values.forEach { it.validate() }
+        require(maximumObservationGapMs in 1..maximumPoseGapMs && maximumPoseGapMs in 200..2000)
+        require(completionTimeoutMs in 1..10000)
+        require((exerciseProgress.values + progress).all { completionTimeoutMs >= it.completionDelayMs + maximumPoseGapMs })
+    }
+}
+
 @Serializable
 data class RecognitionResult(
     val timestampMs: Long,
@@ -38,6 +96,11 @@ data class RecognitionResult(
     val status: RecognitionStatus,
     val completedReps: Int = 0,
     val repCompleted: Boolean = false,
+    /** Legacy top-level fields show a completion when one is emitted; use current for live UI. */
+    val current: TrackingState = TrackingState(exerciseId, confidence, progress, phase, status),
+    val events: List<RepEvent> = emptyList(),
+    val repsByExercise: Map<String, Int> = emptyMap(),
+    val quality: PoseQuality = PoseQuality(),
 )
 
 object Exercises {

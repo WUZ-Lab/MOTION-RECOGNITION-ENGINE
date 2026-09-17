@@ -33,6 +33,12 @@ class LiteRtParityTest {
             val inputs = vector.getJSONArray("input")
             val window = FeatureWindow(FloatArray(inputs.length()) { inputs.getDouble(it).toFloat() }, 180, 33, 180)
             val expected = vector.getJSONArray("scores")
+            val bundled = LiteRtClassifier.fromAssets(instrumentation.context, "bundle")
+            try {
+                val scores = bundled.classify(window)
+                assertEquals(expected.length(), scores.size)
+                for (i in scores.indices) assertEquals(expected.getDouble(i).toFloat(), scores[i], 1e-4f)
+            } finally { bundled.close() }
             val classifier = LiteRtClassifier.fromDirectory(directory)
             try {
                 val scores = classifier.classify(window)

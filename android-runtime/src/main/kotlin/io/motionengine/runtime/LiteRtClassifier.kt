@@ -1,5 +1,6 @@
 package io.motionengine.runtime
 
+import android.content.Context
 import io.motionengine.core.*
 import kotlinx.serialization.decodeFromString
 import org.tensorflow.lite.DataType
@@ -37,10 +38,25 @@ class LiteRtClassifier private constructor(
 
     companion object {
         fun fromDirectory(directory: File, threads: Int = 2): LiteRtClassifier {
-            require(threads in 1..8)
             val manifest = MotionJson.format.decodeFromString<ModelManifest>(File(directory, "manifest.json").readText())
             manifest.validate()
             val model = File(directory, manifest.modelFile).readBytes()
+            return fromBytes(manifest, model, threads)
+        }
+
+        /** Loads an app-bundled model without requiring callers to copy assets into filesDir. */
+        fun fromAssets(context: Context, assetDirectory: String = "motion-model", threads: Int = 2): LiteRtClassifier {
+            val prefix = assetDirectory.trimEnd('/').let { if (it.isEmpty()) "" else "$it/" }
+            val manifest = context.assets.open("${prefix}manifest.json").bufferedReader().use {
+                MotionJson.format.decodeFromString<ModelManifest>(it.readText())
+            }
+            manifest.validate()
+            val model = context.assets.open(prefix + manifest.modelFile).use { it.readBytes() }
+            return fromBytes(manifest, model, threads)
+        }
+
+        private fun fromBytes(manifest: ModelManifest, model: ByteArray, threads: Int): LiteRtClassifier {
+            require(threads in 1..8)
             val digest = MessageDigest.getInstance("SHA-256").digest(model).joinToString("") { "%02x".format(it) }
             require(digest == manifest.sha256) { "Model checksum does not match manifest" }
             val buffer = ByteBuffer.allocateDirect(model.size).order(ByteOrder.nativeOrder()).apply { put(model); rewind() }

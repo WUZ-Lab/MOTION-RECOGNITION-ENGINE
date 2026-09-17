@@ -48,14 +48,23 @@ def tune_thresholds(y, scores, other_index):
             "validationSelectiveMotionF1": best[0], "validationCoverage": best[1]}
 
 
-def build_model(tf):
+def build_model(tf, class_count=5, architecture="baseline"):
+    if class_count < 2 or architecture not in ("baseline", "residual"):
+        raise ValueError("Unsupported model configuration")
     inputs = tf.keras.Input(shape=(180, 33), name="features")
     x = inputs
     for dilation in (1, 2, 4, 8, 16, 32):
-        x = tf.keras.layers.Conv1D(32, 3, padding="causal", dilation_rate=dilation, activation="relu")(x)
+        if architecture == "residual":
+            shortcut = tf.keras.layers.Conv1D(32, 1)(x) if x.shape[-1] != 32 else x
+            x = tf.keras.layers.Conv1D(32, 3, padding="causal", dilation_rate=dilation, activation="relu")(x)
+            x = tf.keras.layers.Dropout(.1)(x)
+            x = tf.keras.layers.Conv1D(32, 3, padding="causal", dilation_rate=dilation)(x)
+            x = tf.keras.layers.Activation("relu")(tf.keras.layers.Add()([x, shortcut]))
+        else:
+            x = tf.keras.layers.Conv1D(32, 3, padding="causal", dilation_rate=dilation, activation="relu")(x)
     x = tf.keras.layers.Cropping1D((179, 0))(x)
     x = tf.keras.layers.Flatten()(x)
-    outputs = tf.keras.layers.Dense(5, activation="softmax", name="scores")(x)
+    outputs = tf.keras.layers.Dense(class_count, activation="softmax", name="scores")(x)
     model = tf.keras.Model(inputs, outputs)
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="sparse_categorical_crossentropy", metrics=["accuracy"])
     return model
@@ -64,17 +73,18 @@ def build_model(tf):
 def train(args):
     import numpy as np
     import tensorflow as tf
-    from .data import load_dataset
-    from .features import CLASSES
+    from .data import load_dataset, validate_classes
 
     tf.keras.utils.set_random_seed(args.seed)
     tf.config.threading.set_inter_op_parallelism_threads(2)
     tf.config.threading.set_intra_op_parallelism_threads(2)
-    dataset, mean, std, split = load_dataset(args.data, args.seed)
+    classes = validate_classes(args.classes)
+    dataset, mean, std, split = load_dataset(args.data, args.seed, classes)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    model = build_model(tf)
+    model = build_model(tf, len(classes), args.architecture)
     x, y = dataset["train"]["x"], dataset["train"]["y"]
+    weights = len(y) / (len(classes) * np.bincount(y, minlength=len(classes))) if args.balance_classes else np.ones(len(classes))
     rng = np.random.default_rng(args.seed)
     history = []
     best_loss, best_weights = float("inf"), None
@@ -83,7 +93,7 @@ def train(args):
         order = rng.permutation(len(x))
         for offset in range(0, len(order), args.batch_size):
             indices = order[offset:offset + args.batch_size]
-            metrics = model.train_on_batch(x[indices], y[indices], return_dict=True)
+            metrics = model.train_on_batch(x[indices], y[indices], sample_weight=weights[y[indices]], return_dict=True)
         val_scores = model(dataset["validation"]["x"], training=False).numpy()
         val_loss = float(-np.log(np.maximum(val_scores[np.arange(len(val_scores)), dataset["validation"]["y"]], 1e-9)).mean())
         history.append({"epoch": epoch + 1, "loss": float(metrics["loss"]), "validationLoss": val_loss})
@@ -93,7 +103,7 @@ def train(args):
     model.set_weights(best_weights)
     val_scores = model(dataset["validation"]["x"], training=False).numpy()
     test_scores = model(dataset["test"]["x"], training=False).numpy()
-    thresholds = tune_thresholds(dataset["validation"]["y"], val_scores, CLASSES.index("other"))
+    thresholds = tune_thresholds(dataset["validation"]["y"], val_scores, classes.index("other"))
 
     class Serving(tf.Module):
         def __init__(self, network):
@@ -115,7 +125,7 @@ def train(args):
     interpreter = tf.lite.Interpreter(model_content=converted, num_threads=2)
     interpreter.allocate_tensors()
     input_spec, output_spec = interpreter.get_input_details()[0], interpreter.get_output_details()[0]
-    if input_spec["shape"].tolist() != [1, 180, 33] or output_spec["shape"].tolist() != [1, 5]:
+    if input_spec["shape"].tolist() != [1, 180, 33] or output_spec["shape"].tolist() != [1, len(classes)]:
         raise ValueError("Unexpected exported tensor shape")
     errors, latency = [], []
     for index, window in enumerate(dataset["test"]["x"]):
@@ -135,7 +145,7 @@ def train(args):
 
     manifest = {
         "schemaVersion": 1, "featureVersion": 1, "modelFile": "motion.tflite",
-        "sha256": hashlib.sha256(converted).hexdigest(), "classes": CLASSES,
+        "sha256": hashlib.sha256(converted).hexdigest(), "classes": classes,
         "sampleRateHz": 30, "windowSize": 180, "featureCount": 32,
         "mean": mean.tolist(), "std": std.tolist(),
         "confidenceThreshold": thresholds["confidenceThreshold"], "marginThreshold": thresholds["marginThreshold"],
@@ -147,9 +157,11 @@ def train(args):
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     report = {"trainingData": manifest["trainingData"], "seed": args.seed, "participantSplit": split,
+              "architecture": args.architecture, "classes": classes, "balancedClasses": args.balance_classes,
+              "activityLabelPolicy": "exercise identity independent of repetition validity; unselected exercises map to other",
               "windowCounts": {name: len(partition["y"]) for name, partition in dataset.items()},
-              "validation": classification_report(dataset["validation"]["y"], val_scores, CLASSES),
-              "test": classification_report(dataset["test"]["y"], test_scores, CLASSES),
+              "validation": classification_report(dataset["validation"]["y"], val_scores, classes),
+              "test": classification_report(dataset["test"]["y"], test_scores, classes),
               "thresholdSelection": thresholds, "history": history,
               "conversionMaxAbsError": max(errors),
               "hostInferenceMs": {"median": float(np.median(latency)), "p95": float(np.percentile(latency, 95))},
@@ -173,6 +185,10 @@ def main():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
+    from .features import CLASSES
+    parser.add_argument("--classes", nargs="+", default=CLASSES, help="Ordered output classes, e.g. squat other")
+    parser.add_argument("--architecture", choices=("baseline", "residual"), default="baseline")
+    parser.add_argument("--balance-classes", action="store_true", help="Weight each training class equally")
     parser.add_argument("--synthetic", action="store_true", help="Mark the bundle as synthetic smoke-test data, never production")
     args = parser.parse_args()
     if args.epochs < 1 or args.batch_size < 1:

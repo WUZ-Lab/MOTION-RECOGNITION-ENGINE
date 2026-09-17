@@ -35,7 +35,10 @@ jobs:
       - run: pip install -e ./training
       - run: PYTHONPATH=training python training/tools/generate_fixtures.py --smoke-data data/synthetic
       - run: python -m motion_training.train --data data/synthetic --output artifacts/smoke-model --epochs 2 --synthetic
+      - run: python -m motion_training.train --data data/synthetic --output artifacts/smoke-squat --epochs 1 --classes squat other --architecture residual --balance-classes --synthetic
       - uses: actions/upload-artifact@v4
         with:
           name: synthetic-model-smoke-only
-          path: artifacts/smoke-model/
+          path: |
+            artifacts/smoke-model/
+            artifacts/smoke-squat/

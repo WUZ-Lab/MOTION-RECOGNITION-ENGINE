@@ -1,5 +1,47 @@
 # 구현 검증 기록
 
+## 2026-09-17 GitHub Packages 배포 설정 검증
+
+태그 기반 GitHub Actions 배포, `sdkVersion` 지정, GitHub 인증과 Maven 메타데이터 설정을 추가했습니다. 아래는 원격 업로드 전 로컬 검증 결과입니다.
+
+| 검사 | 결과 |
+| --- | --- |
+| 배포 작업 dry-run | SDK 3개 모듈의 5개 publication 포함. KMP 루트·Android·JVM 포함 |
+| 로컬 Maven 배포 | `0.1.0` 버전의 `core`, `core-android`, `core-jvm`, `android-runtime`, `mediapipe-adapter` 생성 |
+| 아티팩트·의존성 검사 | 바이너리·소스·POM·Gradle metadata 존재, SDK 의존성 버전 일치, KMP 타깃 참조 파일 존재 확인 |
+| SDK 검증 작업 | JVM 26개 테스트 통과 상태 유지, 샘플 debug 빌드·Lint 통과. Gradle의 최신 결과 재사용 포함 |
+| 독립 Android 앱 | 소스 project 의존성 없이 Maven `0.1.0` 패키지만 사용해 release/R8 빌드 통과 |
+| 워크플로 검증 | YAML·셸 문법 확인. 정상 태그 4개에서 버전 추출, 잘못된 태그 9개 거부 |
+| 배포 입력 검증 | 빈 인증정보와 잘못된 `sdkVersion` 거부. 원격 요청 없이 검사 |
+| README | 코드 블록·셸 문법·내부 링크 확인 |
+
+검증용 Maven 저장소는 `/tmp/motion-github-packages-maven`, 소비 앱은 `/tmp/motion-github-packages-consumer`에 생성했습니다. 임시 파일은 삭제될 수 있습니다. 실제 GitHub 업로드, GitHub Actions 실행 및 원격 저장소에서의 인증·다운로드는 수행하지 않았습니다. 배포 워크플로를 포함한 커밋을 push하고 새 버전 태그를 push하면 원격 배포가 시작됩니다.
+
+## 2026-09-17 SDK 개선 검증
+
+카운팅 후보·이벤트·지정 모드·관절 품질 처리와 학습/평가 변경을 검증했습니다.
+
+| 검사 | 결과 |
+| --- | --- |
+| 코어 JVM 테스트 | 26개 통과. 기존 15개 + 회귀 11개 |
+| Python 데이터·특징·평가 테스트 | 15개 통과 |
+| 샘플 앱 debug APK / Android Lint | 빌드 통과, Lint 오류 없음 |
+| Android 런타임 계측 테스트 APK | 빌드 통과. asset 로딩 후 추론 비교 검사 추가 |
+| 독립 Android 앱의 SDK 사용 | 임시 Maven 저장소에 배포한 세 모듈만 의존해 release/R8 빌드 통과. 소스 project 의존성 없음 |
+| 기존 5종 baseline TCN | 합성 데이터 1 epoch 학습·변환·ZIP 생성 통과. TensorFlow/LiteRT 최대 차이 `1.1920928955078125e-7` |
+| 2종 squat/other residual TCN | 클래스 가중치 사용, 합성 1 epoch 학습·변환·ZIP 생성 통과. 최대 차이 `5.066394805908203e-7` |
+| 지정 모드 JSONL → SDK → JSONL → Python 평가 | 합성 스쿼트 기대 1회/예측 1회, 누락·오카운트 0. 진행률과 단계 오차가 없는 것은 아님 |
+
+회귀 테스트에는 완료 후 other 전환, 짧은 유실 후 확인 재시작, 장시간 유실 취소, 관측하지 않은 바닥 단계 거부, 분류 근거 없는 자동 카운팅 거부, 연속 반복, 손목·한쪽 다리 가림, 점프·부분 동작 거부, 다음 점프가 이전 스쿼트를 취소하지 않는지, 여러 완료 이벤트 동시 발행, 결과 직렬화를 포함했습니다.
+
+지정 모드의 운동 선택값을 자동 분류 성공으로 평가하지 않도록 Python 평가에서 해당 분류 지표는 `null`로 표시합니다. 새 이벤트는 기하학적 완료 시각과 발행 시각을 분리해 비교하고, 단계 누락도 보고합니다.
+
+**범위:** 실제 수집 데이터는 제공되지 않았습니다. 생성한 두 모델은 `trainingData="synthetic"`인 연결 검증용이며 앱 기본 모델로 포함하지 않았습니다. 기기 목록이 비어 있어 이번 변경의 Android 설치·실행·계측 테스트 및 실촬영 정확도/발열 검증은 수행하지 않았습니다. 아래의 기존 에뮬레이터 기록은 이전 코드에 대한 결과입니다.
+
+산출물: `artifacts/revision-baseline/`, `artifacts/revision-squat/`, `sample-android/build/outputs/apk/debug/`. 외부 앱 검증은 `/tmp/motion-sdk-consumer`, 최종 Maven 아티팩트는 `/tmp/motion-sdk-maven-final`에 생성했으며 임시 파일은 삭제될 수 있습니다.
+
+## 2026-09-16 초기 구현 검증
+
 검증일: 2026-09-16 (KST). macOS arm64, JDK 21, Android SDK 36, Python 3.12 / TensorFlow 2.20.0.
 
 | 검사 | 결과 |

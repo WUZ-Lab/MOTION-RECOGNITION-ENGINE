@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.Gravity
 import android.widget.*
 import androidx.activity.ComponentActivity
@@ -30,6 +29,7 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.InputStream
 import java.util.UUID
+import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipInputStream
@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private var provider: ProcessCameraProvider? = null
     @Volatile private var cameraRunning = false
     private var landmarker: PoseLandmarker? = null // worker confined
+    private var lastCameraTimestamp: Long? = null // worker confined
     private var engine: MotionEngine? = null // worker confined
     private var recorder: BufferedWriter? = null // worker confined
     private var lastSession: File? = null
@@ -95,7 +96,7 @@ class MainActivity : ComponentActivity() {
                     engine?.close(); engine = replacement
                     modelDescription = if (classifier.manifest.trainingData == "synthetic")
                         "합성 데이터 검증 모델 · 실제 운동 인식용 아님" else "운동 모델 연결됨 · 확신도는 모델 점수"
-                    getPreferences(MODE_PRIVATE).edit().putString("modelDirectory", directory.name).apply()
+                    getPreferences(MODE_PRIVATE).edit().putString("modelDirectory", directory.name).remove("guidedExercise").apply()
                     runOnUiThread { modelStatus.text = modelDescription }
                     showStatus("운동 모델 설치 완료")
                 } catch (error: Throwable) { directory.deleteRecursively(); throw error }
@@ -152,20 +153,42 @@ class MainActivity : ComponentActivity() {
         }
         fun button(title: String, action: () -> Unit) = Button(this).apply { text = title; setOnClickListener { action() } }
         row(button("Pose 가져오기") { importPose.launch(arrayOf("*/*")) }, button("운동 모델 ZIP") { importModel.launch(arrayOf("*/*")) })
+        row(button("스쿼트 모드") {
+            stopStreams()
+            work { useGuidedSquat() }
+        }, button("자동 인식 모드") {
+            stopStreams()
+            work { loadSavedModel(required = true) }
+        })
         recordButton = button("수집 시작") { toggleRecording() }
         row(button("카메라 시작") { startCamera() }, recordButton, button("중지") { stopStreams() })
         row(button("좌표 재생") { replayFile.launch(arrayOf("*/*")) }, button("좌표 내보내기") { exportSession.launch("session.jsonl") },
             button("예측 내보내기") { exportPredictions.launch("predictions.jsonl") })
         setContentView(root)
         work {
-            val name = getPreferences(MODE_PRIVATE).getString("modelDirectory", null)
-            if (name != null) {
-                val classifier = LiteRtClassifier.fromDirectory(File(filesDir, "models/$name"))
-                engine = try { MotionEngine(classifier) } catch (error: Throwable) { classifier.close(); throw error }
-                modelDescription = if (classifier.manifest.trainingData == "synthetic") "합성 데이터 검증 모델 · 실제 운동 인식용 아님" else "운동 모델 연결됨"
-                runOnUiThread { modelStatus.text = modelDescription }
-            }
+            if (getPreferences(MODE_PRIVATE).getString("guidedExercise", null) == Exercises.SQUAT) useGuidedSquat()
+            else loadSavedModel()
         }
+    }
+
+    private fun useGuidedSquat() {
+        engine?.close()
+        engine = MotionEngine(mode = RecognitionMode.Guided(Exercises.SQUAT))
+        modelDescription = "스쿼트 지정 모드 · 자세 단계로 횟수 측정"
+        getPreferences(MODE_PRIVATE).edit().putString("guidedExercise", Exercises.SQUAT).apply()
+        runOnUiThread { modelStatus.text = modelDescription }
+        showStatus("스쿼트 모드 준비 완료 · 전신이 보이게 서서 시작하세요.")
+    }
+
+    private fun loadSavedModel(required: Boolean = false) {
+        val name = getPreferences(MODE_PRIVATE).getString("modelDirectory", null)
+        if (name == null) { require(!required) { "자동 인식에는 운동 모델 ZIP이 필요합니다." }; return }
+        val classifier = LiteRtClassifier.fromDirectory(File(filesDir, "models/$name"))
+        val replacement = try { MotionEngine(classifier) } catch (error: Throwable) { classifier.close(); throw error }
+        engine?.close(); engine = replacement
+        modelDescription = if (classifier.manifest.trainingData == "synthetic") "합성 데이터 검증 모델 · 실제 운동 인식용 아님" else "운동 모델 연결됨"
+        getPreferences(MODE_PRIVATE).edit().remove("guidedExercise").apply()
+        runOnUiThread { modelStatus.text = modelDescription }
     }
 
     private fun createLandmarker(file: File): PoseLandmarker = PoseLandmarker.createFromOptions(this,
@@ -183,6 +206,7 @@ class MainActivity : ComponentActivity() {
         work {
             require(poseFile.exists()) { "먼저 MediaPipe pose_landmarker_lite.task 파일을 가져오세요." }
             landmarker = createLandmarker(poseFile)
+            lastCameraTimestamp = null
             engine?.reset()
             runOnUiThread {
                 if (generation.get() != token || isDestroyed) return@runOnUiThread
@@ -196,11 +220,13 @@ class MainActivity : ComponentActivity() {
                         analysis.setAnalyzer(worker) { image ->
                             try {
                                 if (generation.get() == token) {
+                                    val timestamp = image.imageInfo.timestamp / 1_000_000L
+                                    if (lastCameraTimestamp?.let { timestamp <= it } == true) return@setAnalyzer
+                                    lastCameraTimestamp = timestamp
                                     val raw = image.toBitmap()
                                     val rotation = image.imageInfo.rotationDegrees
                                     val bitmap = if (rotation == 0) raw else Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height,
                                         Matrix().apply { postRotate(rotation.toFloat()) }, true)
-                                    val timestamp = SystemClock.uptimeMillis()
                                     val mp = BitmapImageBuilder(bitmap).build()
                                     try {
                                         val result = landmarker!!.detectForVideo(mp, timestamp)
@@ -236,7 +262,11 @@ class MainActivity : ComponentActivity() {
             require(landmarker != null && cameraRunning) { "카메라를 먼저 시작하세요." }
             val sessionId = UUID.randomUUID().toString()
             val file = File(filesDir, "sessions/$sessionId.jsonl").apply { parentFile!!.mkdirs() }
-            recorder = file.bufferedWriter().also { it.write(MotionJson.format.encodeToString(SessionHeader(sessionId = sessionId, participantId = id, exerciseLabel = exercise))); it.newLine() }
+            val poseHash = MessageDigest.getInstance("SHA-256").digest(poseFile.readBytes()).joinToString("") { "%02x".format(it) }
+            val header = SessionHeader(sessionId = sessionId, participantId = id, exerciseLabel = exercise,
+                poseModel = "imported.task", poseSettings = mapOf("numPoses" to "1", "minConfidence" to "0.5",
+                    "sha256" to poseHash, "timestampClock" to "camera_image_nanoseconds_to_milliseconds"))
+            recorder = file.bufferedWriter().also { it.write(MotionJson.format.encodeToString(header)); it.newLine() }
             lastSession = file
             showStatus("수집 중: $exercise · 라벨은 학습 파일에만 저장됩니다.")
         }
@@ -274,10 +304,13 @@ class MainActivity : ComponentActivity() {
 
     private fun display(pose: PoseFrame?, result: RecognitionResult?) = runOnUiThread {
         overlay.frame = pose
-        status.text = if (result == null) "${if (recording) "수집 중 · " else ""}$modelDescription" else
-            "${result.exerciseId ?: result.status.name} · 확신도 ${(result.confidence * 100).toInt()}%\n" +
-                "진행률 ${result.progress?.let { "${(it * 100).toInt()}%" } ?: "—"} · ${result.phase ?: "—"} · ${result.completedReps}회" +
-                if (result.repCompleted) " ✓" else ""
+        status.text = if (result == null) "${if (recording) "수집 중 · " else ""}$modelDescription" else {
+            val current = result.current
+            val classification = if (current.source == RecognitionSource.GUIDED) "지정 운동" else "모델 점수 ${(current.confidence * 100).toInt()}%"
+            "${current.exerciseId ?: current.status.name} · $classification\n" +
+                "진행률 ${current.progress?.let { "${(it * 100).toInt()}%" } ?: "—"} · ${current.phase ?: "—"} · ${result.completedReps}회" +
+                if (result.events.isNotEmpty()) " ✓" else ""
+        }
     }
 
     private fun stopStreams() {
