@@ -39,7 +39,7 @@ MediaPipe 좌표에서 **운동별 반복 횟수·1회 동작 진행률·완료 
 
 ### 1. GitHub Packages 저장소와 인증 설정
 
-SDK는 `WUZ-Lab/MOTION-RECOGNITION-ENGINE`의 GitHub Packages로 배포하도록 구성되어 있습니다. **아래 `0.1.0` 예제는 `v0.1.0` 태그의 첫 배포가 성공한 뒤 사용할 수 있습니다.** 실제 버전은 [저장소의 Packages](https://github.com/WUZ-Lab/MOTION-RECOGNITION-ENGINE/packages)에서 확인하세요. 배포 방법은 [GitHub Packages에 배포](#github-packages에-배포)에 있습니다.
+SDK는 `WUZ-Lab/MOTION-RECOGNITION-ENGINE`의 GitHub Packages로 배포하도록 구성되어 있습니다. **아래 `0.1.1` 예제는 `v0.1.1` 태그의 첫 배포가 성공한 뒤 사용할 수 있습니다.** 실제 버전은 [저장소의 Packages](https://github.com/WUZ-Lab/MOTION-RECOGNITION-ENGINE/packages)에서 확인하세요. 배포 방법은 [GitHub Packages에 배포](#github-packages에-배포)에 있습니다.
 
 GitHub의 Gradle 패키지는 public이어도 인증이 필요합니다. 설치할 계정에 패키지 읽기 권한을 부여하고, `read:packages` 권한의 **Personal access token (classic)**을 준비합니다. 조직에서 SSO를 요구한다면 해당 조직에 토큰을 승인해야 합니다. [GitHub 인증 문서](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-gradle-registry)
 
@@ -103,12 +103,12 @@ kotlin {
 }
 
 dependencies {
-    implementation("io.motionengine:android-runtime:0.1.0")
-    implementation("io.motionengine:mediapipe-adapter:0.1.0")
+    implementation("io.motionengine:android-runtime:0.1.1")
+    implementation("io.motionengine:mediapipe-adapter:0.1.1")
 }
 ```
 
-`core`, LiteRT, MediaPipe 의존성은 위 모듈을 통해 함께 해결됩니다. 지정 모드와 MediaPipe만 사용한다면 `android-runtime`은 생략할 수 있습니다. 직접 만든 `PoseFrame`만 사용하는 지정 모드 앱은 `io.motionengine:core:0.1.0`만 추가할 수 있습니다. SDK 모듈은 모두 같은 버전을 사용하세요.
+`core`, LiteRT, MediaPipe 의존성은 위 모듈을 통해 함께 해결됩니다. 지정 모드와 MediaPipe만 사용한다면 `android-runtime`은 생략할 수 있습니다. 직접 만든 `PoseFrame`만 사용하는 지정 모드 앱은 `io.motionengine:core:0.1.1`만 추가할 수 있습니다. SDK 모듈은 모두 같은 버전을 사용하세요.
 
 ### 로컬에서 SDK를 수정하며 사용하는 경우
 
@@ -473,7 +473,7 @@ PYTHONPATH=training python3 -m unittest discover -s training/tests -v
 
 ## GitHub Packages에 배포
 
-[배포 워크플로](.github/workflows/publish.yml)는 `v*` 태그를 push하면 실행됩니다. `v0.1.0`은 패키지 버전 `0.1.0`, `v0.2.0-rc.1`은 `0.2.0-rc.1`로 배포합니다. 일반 브랜치 push나 PR은 배포하지 않으며, 형식에 맞지 않는 태그와 `-SNAPSHOT` 태그는 거부합니다.
+[배포 워크플로](.github/workflows/publish.yml)는 `v*` 태그를 push하면 실행됩니다. `v0.1.1`은 패키지 버전 `0.1.1`, `v0.2.0-rc.1`은 `0.2.0-rc.1`로 배포합니다. 일반 브랜치 push나 PR은 배포하지 않으며, 형식에 맞지 않는 태그와 `-SNAPSHOT` 태그는 거부합니다.
 
 ### 태그로 자동 배포
 
@@ -482,8 +482,8 @@ PYTHONPATH=training python3 -m unittest discover -s training/tests -v
 3. 아직 사용하지 않은 버전 태그를 생성하고 push합니다.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 4. **Actions → Publish GitHub Packages**에서 성공 여부를 확인합니다. 코어 JVM 테스트, 샘플 앱 빌드·Lint가 통과한 뒤 업로드합니다.
@@ -507,8 +507,8 @@ Actions의 **Run workflow**에서도 기존 태그를 입력해 배포할 수 �
 저장소 쓰기 권한이 있는 계정의 **PAT classic (`write:packages`)**을 개인 `~/.gradle/gradle.properties`의 `gpr.user`, `gpr.key`로 설정하거나 `GITHUB_ACTOR`, `GITHUB_TOKEN` 환경변수로 전달합니다. GitHub 토큰을 명령행 인자에 직접 넣지 않습니다.
 
 ```sh
-./gradlew :core:jvmTest :sample-android:assembleDebug :sample-android:lintDebug -PsdkVersion=0.1.0
-./gradlew publishGitHubPackages -PsdkVersion=0.1.0
+./gradlew :core:jvmTest :sample-android:assembleDebug :sample-android:lintDebug -PsdkVersion=0.1.1
+./gradlew publishGitHubPackages -PsdkVersion=0.1.1
 ```
 
 `sdkVersion`을 생략하면 개발용 `0.1.0-SNAPSHOT`이 됩니다. 정식 배포에서는 반드시 새 버전을 지정하세요. 대상 저장소는 `-PgithubRepository=OWNER/REPOSITORY`, `GITHUB_REPOSITORY`, 기본값 `WUZ-Lab/MOTION-RECOGNITION-ENGINE` 순서로 선택합니다. fork의 Actions는 해당 fork로 배포하며, 소비 앱의 저장소 URL도 맞춰 바꿔야 합니다.
